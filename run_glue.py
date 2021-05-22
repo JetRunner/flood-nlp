@@ -63,9 +63,6 @@ from transformers import glue_convert_examples_to_features as convert_examples_t
 
 logger = logging.getLogger(__name__)
 
-ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig, XLNetConfig, XLMConfig, 
-                                                                                RobertaConfig, DistilBertConfig)), ())
-
 MODEL_CLASSES = {
     'bert': (BertConfig, BertForSequenceClassification, BertTokenizer),
     'xlnet': (XLNetConfig, XLNetForSequenceClassification, XLNetTokenizer),
@@ -154,9 +151,12 @@ def train(args, train_dataset, model, tokenizer):
             loss = outputs[0]  # model outputs are always tuple in transformers (see doc)
 
             if args.n_gpu > 1:
-                loss = loss.mean() # mean() to average on multi-gpu parallel training
+                loss = loss.mean()  # mean() to average on multi-gpu parallel training
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
+
+            # flooding
+            loss = (loss - args.flood).abs() + args.flood
 
             if args.fp16:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -274,6 +274,7 @@ def evaluate(args, model, tokenizer, prefix=""):
         elif args.output_mode == "regression":
             preds = np.squeeze(preds)
         result = compute_metrics(eval_task, preds, out_label_ids)
+        results['loss'] = eval_loss
         results.update(result)
 
         output_eval_file = os.path.join(eval_output_dir, prefix, "eval_results.txt")
@@ -313,9 +314,6 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                                                 label_list=label_list,
                                                 max_length=args.max_seq_length,
                                                 output_mode=output_mode,
-                                                pad_on_left=bool(args.model_type in ['xlnet']),                 # pad on the left for xlnet
-                                                pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
-                                                pad_token_segment_id=4 if args.model_type in ['xlnet'] else 0,
         )
         if args.local_rank in [-1, 0]:
             logger.info("Saving features into cached file %s", cached_features_file)
@@ -345,8 +343,8 @@ def main():
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
     parser.add_argument("--model_type", default=None, type=str, required=True,
                         help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()))
-    parser.add_argument("--model_name_or_path", default=None, type=str, required=True,
-                        help="Path to pre-trained model or shortcut name selected in the list: " + ", ".join(ALL_MODELS))
+    parser.add_argument("--model_name_or_path", default="bert-base-uncased", type=str, required=True,
+                        help="Path to pre-trained model or shortcut name")
     parser.add_argument("--task_name", default=None, type=str, required=True,
                         help="The name of the task to train selected in the list: " + ", ".join(processors.keys()))
     parser.add_argument("--output_dir", default=None, type=str, required=True,
@@ -391,6 +389,8 @@ def main():
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
     parser.add_argument("--warmup_steps", default=0, type=int,
                         help="Linear warmup over warmup_steps.")
+    parser.add_argument("--flood", default=0, type=float,
+                        help="Flood level.")
 
     parser.add_argument('--logging_steps', type=int, default=50,
                         help="Log every X updates steps.")
